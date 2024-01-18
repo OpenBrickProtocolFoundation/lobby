@@ -1,0 +1,31 @@
+POST http://127.0.0.1:5000/lobbies
+Content-Type: application/json
+
+{
+  "name": "coder2k's lobby",
+  "size": 4,
+  "host_username": "coder2k",
+  "host_password": "secret"
+}
+
+> {% client.global.set("lobby_id", response.body.id); %}
+
+###
+
+GET http://127.0.0.1:5000/lobbies
+Accept: application/json
+
+###
+
+GET http://127.0.0.1:5000/lobbies/{{lobby_id}}
+Accept: application/json
+
+###
+
+POST http://127.0.0.1:5000/register
+Content-Type: application/json
+
+{
+  "username": "coder2k",
+  "password": "secret"
+}
