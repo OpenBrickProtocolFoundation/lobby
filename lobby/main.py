@@ -12,7 +12,6 @@ from uuid import uuid4
 import sqlalchemy
 from dataclasses_jsonschema import JsonSchemaMixin
 from dataclasses_jsonschema import ValidationError
-from flask import abort
 from flask import Flask
 from flask import jsonify
 from flask import request
@@ -111,9 +110,8 @@ def lobby_list():
 @app.route("/lobbies/<lobby_id>", methods=["GET"])
 def lobby_detail(lobby_id: str):
     lobby = active_lobbies.get(lobby_id)
-
     if lobby is None:
-        abort(HTTPStatus.NOT_FOUND)
+        return create_error_response(f"there is no active lobby with id {lobby_id}", HTTPStatus.NOT_FOUND)
 
     @dataclass
     class LobbyResponse(JsonSchemaMixin):
@@ -138,7 +136,7 @@ def lobby_detail(lobby_id: str):
 @app.route("/lobbies", methods=["POST"])
 def create_lobby():
     if not request.is_json:
-        abort(HTTPStatus.BAD_REQUEST)
+        return create_error_response("Request is not JSON", HTTPStatus.BAD_REQUEST)
 
     @dataclass
     class CreateLobbyRequest(JsonSchemaMixin):
@@ -171,7 +169,7 @@ def create_lobby():
 @app.route("/register", methods=["POST"])
 def register() -> tuple[Response, HTTPStatus]:
     if not request.is_json:
-        abort(400)
+        return create_error_response("Request is not JSON", HTTPStatus.BAD_REQUEST)
 
     @dataclass
     class RegisterRequest(JsonSchemaMixin):
