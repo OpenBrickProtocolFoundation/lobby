@@ -81,6 +81,11 @@ class PlayerInfo(JsonSchemaMixin):
         return cls(id_, user.username)
 
 
+@app.route("/health", methods=["GET"])
+def health_check():
+    return create_ok_response({})
+
+
 @app.route("/lobbies", methods=["GET"])
 def lobby_list():
     @dataclass
@@ -198,4 +203,6 @@ def register() -> tuple[Response, HTTPStatus]:
     return create_response(HTTPStatus.CREATED, {"id": new_user.id})
 
 
-app.run(debug=True)
+# this runs, when you launch this file manually, otherwise flask imports this file and ignores this
+if __name__ == "__main__":
+    app.run(debug=True)
