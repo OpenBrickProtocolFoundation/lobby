@@ -1,4 +1,5 @@
 import os.path
+import sys
 import time
 import typing
 from dataclasses import dataclass
@@ -79,6 +80,11 @@ class PlayerInfo(JsonSchemaMixin):
             raise KeyError(f"User with id {id_} not found")
         assert isinstance(user, User)
         return cls(id_, user.username)
+
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    return create_ok_response({})
 
 
 @app.route("/lobbies", methods=["GET"])
@@ -198,4 +204,11 @@ def register() -> tuple[Response, HTTPStatus]:
     return create_response(HTTPStatus.CREATED, {"id": new_user.id})
 
 
-app.run(debug=True)
+# this runs, when you launch this file manually, otherwise flask imports this file and ignores this
+if __name__ == "__main__":
+    print(sys.argv)
+    if len(sys.argv) >= 2 and sys.argv[1] == "prod":
+        from waitress import serve
+        serve(app, host="0.0.0.0", port=1717)
+    else:
+        app.run(debug=True)
