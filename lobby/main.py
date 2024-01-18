@@ -1,8 +1,11 @@
 import os.path
 import time
+import typing
 from dataclasses import dataclass
 from dataclasses import field
 from http import HTTPStatus
+from typing import Any
+from typing import Optional
 from typing import Self
 from uuid import uuid4
 
@@ -14,7 +17,9 @@ from flask import Flask
 from flask import jsonify
 from flask import request
 from flask import Response
-from flask_bcrypt import Bcrypt
+from flask_bcrypt import Bcrypt  # pyright: ignore[reportMissingTypeStubs]
+from flask_bcrypt import check_password_hash  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
+from flask_bcrypt import generate_password_hash  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 from flask_sqlalchemy import SQLAlchemy
 
 _DATABASE_PATH = os.path.realpath("database.sqlite")
@@ -51,11 +56,11 @@ class Lobby:
 active_lobbies: dict[str, Lobby] = dict()
 
 
-def create_response(code: HTTPStatus, *args, **kwargs) -> tuple[Response, HTTPStatus]:
+def create_response(code: HTTPStatus, *args: Any, **kwargs: Any) -> tuple[Response, HTTPStatus]:
     return jsonify(*args, **kwargs), code
 
 
-def create_ok_response(*args, **kwargs) -> tuple[Response, HTTPStatus]:
+def create_ok_response(*args: Any, **kwargs: Any) -> tuple[Response, HTTPStatus]:
     return create_response(HTTPStatus.OK, *args, **kwargs)
 
 
@@ -70,9 +75,10 @@ class PlayerInfo(JsonSchemaMixin):
 
     @classmethod
     def from_id(cls, id_: str) -> Self:
-        user = User.query.filter_by(id=id_).first()
+        user = typing.cast(Optional[User], User.query.filter_by(id=id_).first())
         if user is None:
             raise KeyError(f"User with id {id_} not found")
+        assert isinstance(user, User)
         return cls(id_, user.username)
 
 
@@ -116,11 +122,11 @@ def lobby_detail(lobby_id: str):
         host_info: PlayerInfo
         player_infos: list[PlayerInfo]
 
-    host_user = User.query.filter(User.id == lobby.host_id).first()
+    host_user = typing.cast(Optional[User], User.query.filter(User.id == lobby.host_id).first())
     assert host_user is not None
     host_info = PlayerInfo(lobby.host_id, host_user.username)
 
-    player_users = User.query.filter(User.id in lobby.player_ids).all()
+    player_users = typing.cast(list[User], User.query.filter(User.id.in_(lobby.player_ids)).all())
     assert len(player_users) == len(lobby.player_ids)
     player_infos = [PlayerInfo(player.id, player.username) for player in player_users]
 
@@ -146,8 +152,8 @@ def create_lobby():
     except ValidationError as e:
         return create_error_response(str(e), HTTPStatus.BAD_REQUEST)
 
-    user = User.query.filter_by(username=create_lobby_request.host_username).first()
-    if user is None or not bcrypt.check_password_hash(user.password, create_lobby_request.host_password):
+    user = typing.cast(Optional[User], User.query.filter_by(username=create_lobby_request.host_username).first())
+    if user is None or not check_password_hash(user.password, create_lobby_request.host_password):
         return create_error_response("Invalid host credentials.", HTTPStatus.BAD_REQUEST)
 
     new_id = str(uuid4())
@@ -178,8 +184,12 @@ def register() -> tuple[Response, HTTPStatus]:
         return create_error_response(str(e), HTTPStatus.BAD_REQUEST)
 
     new_id = str(uuid4())
-    hashed_password = bcrypt.generate_password_hash(register_request.password).decode("utf-8")
-    new_user = User(id=new_id, username=register_request.username, password=hashed_password)
+    hashed_password = generate_password_hash(register_request.password).decode("utf-8")
+    new_user = User(
+        id=new_id,
+        username=register_request.username,
+        password=hashed_password
+    )  # pyright: ignore[reportGeneralTypeIssues]
 
     try:
         db.session.add(new_user)
