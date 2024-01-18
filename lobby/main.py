@@ -1,4 +1,5 @@
 import os.path
+import sys
 import time
 import typing
 from dataclasses import dataclass
@@ -205,4 +206,9 @@ def register() -> tuple[Response, HTTPStatus]:
 
 # this runs, when you launch this file manually, otherwise flask imports this file and ignores this
 if __name__ == "__main__":
-    app.run(debug=True)
+    print(sys.argv)
+    if len(sys.argv) >= 2 and sys.argv[1] == "prod":
+        from waitress import serve
+        serve(app, host="0.0.0.0", port=1717)
+    else:
+        app.run(debug=True)
