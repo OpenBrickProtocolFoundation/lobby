@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  build:
+  static-analysis:
     runs-on: ubuntu-latest
 
     steps:
