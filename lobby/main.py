@@ -22,6 +22,8 @@ from flask_bcrypt import check_password_hash  # pyright: ignore[reportMissingTyp
 from flask_bcrypt import generate_password_hash  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 from flask_sqlalchemy import SQLAlchemy
 
+from lobby.synchronized import Synchronized
+
 _DATABASE_PATH = os.path.realpath("database.sqlite")
 
 app = Flask(__name__)
@@ -53,7 +55,7 @@ class Lobby:
         self.timestamp = time.monotonic()
 
 
-active_lobbies: dict[str, Lobby] = dict()
+active_lobbies: Synchronized[dict[str, Lobby]] = Synchronized(dict())
 
 
 def create_response(code: HTTPStatus, *args: Any, **kwargs: Any) -> tuple[Response, HTTPStatus]:
@@ -96,12 +98,13 @@ def lobby_list():
     class LobbyListResponse(JsonSchemaMixin):
         lobbies: list[LobbyInfo]
 
-    lobbies = [
-        LobbyInfo(lobby.id, lobby.name, lobby.size, len(lobby.player_ids) + 1, PlayerInfo.from_id(lobby.host_id))
-        for
-        lobby
-        in active_lobbies.values()
-    ]
+    with active_lobbies.lock() as locked:
+        lobbies = [
+            LobbyInfo(lobby.id, lobby.name, lobby.size, len(lobby.player_ids) + 1, PlayerInfo.from_id(lobby.host_id))
+            for
+            lobby
+            in locked.get().values()
+        ]
 
     response = LobbyListResponse(lobbies)
 
@@ -110,7 +113,9 @@ def lobby_list():
 
 @app.route("/lobbies/<lobby_id>", methods=["GET"])
 def lobby_detail(lobby_id: str):
-    lobby = active_lobbies.get(lobby_id)
+    with active_lobbies.lock() as locked:
+        lobby = locked.get().get(lobby_id)
+
     if lobby is None:
         return create_error_response(f"there is no active lobby with id {lobby_id}", HTTPStatus.NOT_FOUND)
 
@@ -155,9 +160,13 @@ def create_lobby():
     if user is None or not check_password_hash(user.password, create_lobby_request.host_password):
         return create_error_response("Invalid host credentials.", HTTPStatus.BAD_REQUEST)
 
-    new_id = str(uuid4())
-    new_lobby = Lobby(id=new_id, name=create_lobby_request.name, size=create_lobby_request.size, host_id=user.id)
-    active_lobbies[new_id] = new_lobby
+    with active_lobbies.lock() as locked:
+        if any(lobby.host_id == user.id or user.id in lobby.player_ids for lobby in locked.get().values()):
+            return create_error_response("This user is already inside another lobby.", HTTPStatus.BAD_REQUEST)
+
+        new_id = str(uuid4())
+        new_lobby = Lobby(id=new_id, name=create_lobby_request.name, size=create_lobby_request.size, host_id=user.id)
+        locked.get()[new_id] = new_lobby
 
     @dataclass
     class CreateLobbyResponse(JsonSchemaMixin):
