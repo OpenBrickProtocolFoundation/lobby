@@ -1,4 +1,5 @@
 import os.path
+import sys
 import time
 import typing
 from dataclasses import dataclass
@@ -198,4 +199,14 @@ def register() -> tuple[Response, HTTPStatus]:
     return create_response(HTTPStatus.CREATED, {"id": new_user.id})
 
 
-app.run(debug=True)
+def main() -> None:
+    print(sys.argv)
+    if len(sys.argv) >= 2 and sys.argv[1] == "production":
+        from waitress import serve
+        serve(app, host="0.0.0.0", port=1717)  # todo: fetch the port from some config file
+    else:
+        app.run(debug=True)
+
+
+if __name__ == "__main__":
+    main()
