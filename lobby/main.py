@@ -169,10 +169,10 @@ def create_lobby():
         locked.get()[new_id] = new_lobby
 
     @dataclass
-    class CreateLobbyResponse(JsonSchemaMixin):
+    class LobbyCreationResponse(JsonSchemaMixin):
         id: str
 
-    response = CreateLobbyResponse(id=new_id)
+    response = LobbyCreationResponse(id=new_id)
     return create_response(HTTPStatus.CREATED, response.to_dict())
 
 
