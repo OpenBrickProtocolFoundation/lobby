@@ -1,11 +1,34 @@
-POST http://127.0.0.1:5000/lobbies
+POST http://127.0.0.1:5000/login
 Content-Type: application/json
 
 {
+  "username": "coder2k",
+  "password": "secret"
+}
+
+> {% client.global.set("jwt", response.body.jwt); %}
+
+###
+
+POST http://127.0.0.1:5000/login
+Content-Type: application/json
+
+{
+  "username": "r00tifant",
+  "password": "sudo"
+}
+
+> {% client.global.set("jwt", response.body.jwt); %}
+
+###
+
+POST http://127.0.0.1:5000/lobbies
+Content-Type: application/json
+Authorization: Bearer {{jwt}}
+
+{
   "name": "coder2k's lobby",
-  "size": 4,
-  "host_username": "coder2k",
-  "host_password": "secret"
+  "size": 4
 }
 
 > {% client.global.set("lobby_id", response.body.id); %}
@@ -22,10 +45,20 @@ Accept: application/json
 
 ###
 
+POST http://127.0.0.1:5000/lobbies/{{lobby_id}}
+Content-Type: application/json
+Authorization: Bearer {{jwt}}
+
+###
+
 POST http://127.0.0.1:5000/register
 Content-Type: application/json
 
 {
-  "username": "coder2k",
-  "password": "secret"
+  "username": "r00tifant",
+  "password": "sudo"
 }
+
+###
+
+GET http://127.0.0.1:5000/users

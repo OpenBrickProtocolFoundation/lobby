@@ -1,4 +1,5 @@
 import os.path
+import pprint
 import sys
 import time
 import typing
@@ -10,18 +11,23 @@ from typing import Optional
 from typing import Self
 from uuid import uuid4
 
+import jwt
 import sqlalchemy
 from dataclasses_jsonschema import JsonSchemaMixin
 from dataclasses_jsonschema import ValidationError
+from flask import current_app
 from flask import Flask
 from flask import jsonify
 from flask import request
+from flask import Request
 from flask import Response
 from flask_bcrypt import Bcrypt  # pyright: ignore[reportMissingTypeStubs]
 from flask_bcrypt import check_password_hash  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 from flask_bcrypt import generate_password_hash  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 from flask_sqlalchemy import SQLAlchemy
 
+from lobby.config import Config
+from lobby.config import ConfigValue
 from lobby.synchronized import Synchronized
 
 _DATABASE_PATH = os.path.realpath("database.sqlite")
@@ -55,6 +61,11 @@ class Lobby:
         self.timestamp = time.monotonic()
 
 
+@dataclass
+class JwtPayload(JsonSchemaMixin):
+    user_id: str
+
+
 active_lobbies: Synchronized[dict[str, Lobby]] = Synchronized(dict())
 
 
@@ -84,8 +95,36 @@ class PlayerInfo(JsonSchemaMixin):
         return cls(id_, user.username)
 
 
+def try_authenticate(client_request: Request) -> User | tuple[Response, HTTPStatus]:
+    if "Authorization" not in client_request.headers:
+        return create_error_response("Unauthorized", HTTPStatus.UNAUTHORIZED)
+
+    parts = client_request.headers["Authorization"].split(" ")
+    if len(parts) != 2:
+        return create_error_response("Invalid authorization header", HTTPStatus.UNAUTHORIZED)
+
+    token_type, token = parts
+    if token_type != "Bearer":
+        return create_error_response("Invalid authorization header", HTTPStatus.UNAUTHORIZED)
+    try:
+        payload = JwtPayload.from_dict(
+            jwt.decode(token, current_app.config[ConfigValue.JWT_SECRET.value], algorithms=["HS256"])
+        )
+    except jwt.exceptions.DecodeError:
+        return create_error_response("Invalid token", HTTPStatus.UNAUTHORIZED)
+    except ValidationError as e:
+        return create_error_response(f"Invalid JWT payload format: {e}", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    print(f"{payload = }")
+    user = User.query.filter_by(id=payload.user_id).first()
+    if user is None:
+        return create_error_response("User not found", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    return user
+
+
 @app.route("/lobbies", methods=["GET"])
-def lobby_list():
+def lobby_list() -> tuple[Response, HTTPStatus]:
     @dataclass
     class LobbyInfo(JsonSchemaMixin):
         id: str
@@ -111,8 +150,30 @@ def lobby_list():
     return create_ok_response(response.to_dict())
 
 
+@app.route("/lobbies/<lobby_id>", methods=["POST"])
+def join_lobby(lobby_id: str) -> tuple[Response, HTTPStatus]:
+    user = try_authenticate(request)
+    if not isinstance(user, User):
+        return user
+
+    with active_lobbies.lock() as locked:
+        lobby = locked.get().get(lobby_id)
+        if lobby is None:
+            return create_error_response(f"there is no active lobby with id {lobby_id}", HTTPStatus.NOT_FOUND)
+
+        if len(lobby.player_ids) + 1 >= lobby.size:
+            return create_error_response("Lobby is already full.", HTTPStatus.BAD_REQUEST)
+
+        if any(lobby.host_id == user.id or user.id in lobby.player_ids for lobby in locked.get().values()):
+            return create_error_response("This user is already inside another lobby.", HTTPStatus.BAD_REQUEST)
+
+        lobby.player_ids.append(user.id)
+
+    return create_response(HTTPStatus.NO_CONTENT)
+
+
 @app.route("/lobbies/<lobby_id>", methods=["GET"])
-def lobby_detail(lobby_id: str):
+def lobby_detail(lobby_id: str) -> tuple[Response, HTTPStatus]:
     with active_lobbies.lock() as locked:
         lobby = locked.get().get(lobby_id)
 
@@ -140,7 +201,11 @@ def lobby_detail(lobby_id: str):
 
 
 @app.route("/lobbies", methods=["POST"])
-def create_lobby():
+def create_lobby() -> tuple[Response, HTTPStatus]:
+    user = try_authenticate(request)
+    if not isinstance(user, User):
+        return user
+
     if not request.is_json:
         return create_error_response("Request is not JSON", HTTPStatus.BAD_REQUEST)
 
@@ -148,17 +213,11 @@ def create_lobby():
     class CreateLobbyRequest(JsonSchemaMixin):
         name: str
         size: int
-        host_username: str
-        host_password: str
 
     try:
         create_lobby_request = CreateLobbyRequest.from_dict(request.get_json())
     except ValidationError as e:
         return create_error_response(str(e), HTTPStatus.BAD_REQUEST)
-
-    user = typing.cast(Optional[User], User.query.filter_by(username=create_lobby_request.host_username).first())
-    if user is None or not check_password_hash(user.password, create_lobby_request.host_password):
-        return create_error_response("Invalid host credentials.", HTTPStatus.BAD_REQUEST)
 
     with active_lobbies.lock() as locked:
         if any(lobby.host_id == user.id or user.id in lobby.player_ids for lobby in locked.get().values()):
@@ -174,6 +233,52 @@ def create_lobby():
 
     response = LobbyCreationResponse(id=new_id)
     return create_response(HTTPStatus.CREATED, response.to_dict())
+
+
+@app.route("/users", methods=["GET"])
+def get_users() -> tuple[Response, HTTPStatus]:
+    users = User.query.all()
+    user_infos = [PlayerInfo(user.id, user.username) for user in users]
+
+    @dataclass
+    class UserList(JsonSchemaMixin):
+        users: list[PlayerInfo]
+
+    response = UserList(user_infos)
+
+    return create_ok_response(response.to_dict())
+
+
+@app.route("/login", methods=["POST"])
+def login() -> tuple[Response, HTTPStatus]:
+    if not request.is_json:
+        return create_error_response("Request is not JSON", HTTPStatus.BAD_REQUEST)
+
+    @dataclass
+    class Credentials(JsonSchemaMixin):
+        username: str
+        password: str
+
+    try:
+        credentials = Credentials.from_dict(request.get_json())
+    except ValidationError as e:
+        return create_error_response(str(e), HTTPStatus.BAD_REQUEST)
+
+    user = User.query.filter_by(username=credentials.username).first()
+    if user is None or not check_password_hash(user.password, credentials.password):
+        return create_error_response("Invalid credentials", HTTPStatus.UNAUTHORIZED)
+
+    json_web_token = jwt.encode(
+        JwtPayload(user.id).to_dict(),
+        current_app.config[ConfigValue.JWT_SECRET.value],
+        algorithm="HS256"
+    )
+
+    @dataclass
+    class LoginResponse(JsonSchemaMixin):
+        jwt: str
+
+    return create_ok_response(LoginResponse(jwt=json_web_token).to_dict())
 
 
 @app.route("/register", methods=["POST"])
@@ -205,11 +310,13 @@ def register() -> tuple[Response, HTTPStatus]:
     except sqlalchemy.exc.IntegrityError:
         return create_error_response("Username already exists.", HTTPStatus.CONFLICT)
 
-    return create_response(HTTPStatus.CREATED, {"id": new_user.id})
+    return create_response(HTTPStatus.NO_CONTENT)
 
 
 def main() -> None:
-    print(sys.argv)
+    config = Config.from_file("config.json")
+    app.config.update(config.to_dict())
+    pprint.pprint(app.config)
     if len(sys.argv) >= 2 and sys.argv[1] == "production":
         from waitress import serve
         serve(app, host="0.0.0.0", port=1717)  # todo: fetch the port from some config file
