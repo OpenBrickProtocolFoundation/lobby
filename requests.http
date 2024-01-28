@@ -51,6 +51,18 @@ Authorization: Bearer {{jwt}}
 
 ###
 
+PUT http://127.0.0.1:5000/lobbies/{{lobby_id}}/leave
+Content-Type: application/json
+Authorization: Bearer {{jwt}}
+
+###
+
+DELETE http://127.0.0.1:5000/lobbies/{{lobby_id}}
+Content-Type: application/json
+Authorization: Bearer {{jwt}}
+
+###
+
 POST http://127.0.0.1:5000/register
 Content-Type: application/json
 

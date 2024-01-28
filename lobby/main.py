@@ -200,6 +200,44 @@ def lobby_detail(lobby_id: str) -> tuple[Response, HTTPStatus]:
     return create_ok_response(response.to_dict())
 
 
+@app.route("/lobbies/<lobby_id>", methods=["DELETE"])
+def delete_lobby(lobby_id: str) -> tuple[Response, HTTPStatus]:
+    user = try_authenticate(request)
+    if not isinstance(user, User):
+        return user
+
+    with active_lobbies.lock() as locked:
+        if lobby_id not in locked.get():
+            return create_error_response("Lobby not found", HTTPStatus.NOT_FOUND)
+
+        lobby = locked.get()[lobby_id]
+        if lobby.host_id != user.id:
+            return create_error_response("You are not the host of this lobby", HTTPStatus.FORBIDDEN)
+
+        locked.get().pop(lobby_id)
+
+        return create_response(HTTPStatus.NO_CONTENT)
+
+
+@app.route("/lobbies/<lobby_id>/leave", methods=["PUT"])
+def leave_lobby(lobby_id: str) -> tuple[Response, HTTPStatus]:
+    user = try_authenticate(request)
+    if not isinstance(user, User):
+        return user
+
+    with active_lobbies.lock() as locked:
+        if lobby_id not in locked.get():
+            return create_error_response("Lobby not found", HTTPStatus.NOT_FOUND)
+
+        lobby = locked.get()[lobby_id]
+        if user.id not in lobby.player_ids:
+            return create_error_response("You are not a player in this lobby", HTTPStatus.FORBIDDEN)
+
+        lobby.player_ids.remove(user.id)
+
+    return create_response(HTTPStatus.NO_CONTENT)
+
+
 @app.route("/lobbies", methods=["POST"])
 def create_lobby() -> tuple[Response, HTTPStatus]:
     user = try_authenticate(request)
