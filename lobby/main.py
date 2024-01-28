@@ -1,5 +1,8 @@
 import os.path
 import pprint
+import socket
+import struct
+import subprocess
 import sys
 import time
 import typing
@@ -56,6 +59,7 @@ class Lobby:
     host_id: str
     timestamp: float = field(default_factory=time.monotonic)
     player_ids: list[str] = field(default_factory=list)
+    gameserver_port: Optional[int] = field(default=None)
 
     def touch(self) -> None:
         self.timestamp = time.monotonic()
@@ -174,6 +178,10 @@ def join_lobby(lobby_id: str) -> tuple[Response, HTTPStatus]:
 
 @app.route("/lobbies/<lobby_id>", methods=["GET"])
 def lobby_detail(lobby_id: str) -> tuple[Response, HTTPStatus]:
+    user = try_authenticate(request)
+    if not isinstance(user, User):
+        return user
+
     with active_lobbies.lock() as locked:
         lobby = locked.get().get(lobby_id)
 
@@ -186,6 +194,7 @@ def lobby_detail(lobby_id: str) -> tuple[Response, HTTPStatus]:
         size: int
         host_info: PlayerInfo
         player_infos: list[PlayerInfo]
+        gameserver_port: Optional[int]
 
     host_user = typing.cast(Optional[User], User.query.filter(User.id == lobby.host_id).first())
     assert host_user is not None
@@ -236,6 +245,40 @@ def leave_lobby(lobby_id: str) -> tuple[Response, HTTPStatus]:
         lobby.player_ids.remove(user.id)
 
     return create_response(HTTPStatus.NO_CONTENT)
+
+
+@app.route("/lobbies/<lobby_id>/start", methods=["POST"])
+def start_gameserver(lobby_id: str) -> tuple[Response, HTTPStatus]:
+    user = try_authenticate(request)
+    if not isinstance(user, User):
+        return user
+
+    with active_lobbies.lock() as locked:
+        if lobby_id not in locked.get():
+            return create_error_response("Lobby not found", HTTPStatus.NOT_FOUND)
+
+        lobby = locked.get()[lobby_id]
+        if lobby.host_id != user.id:
+            return create_error_response("You are not the host of this lobby", HTTPStatus.FORBIDDEN)
+
+        if lobby.gameserver_port is not None:
+            return create_error_response("Server is already running", HTTPStatus.BAD_REQUEST)
+
+        gameserver_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        gameserver_socket.bind(("127.0.0.1", 0))
+        gameserver_socket.listen(1)
+        socket_port = str(gameserver_socket.getsockname()[1])
+        subprocess.Popen([current_app.config[ConfigValue.GAMESERVER_EXECUTABLE.value], socket_port])
+        client_socket, _ = gameserver_socket.accept()
+        client_socket.send(struct.pack("!H", lobby.size))
+
+        with client_socket.makefile("rb") as file:
+            data = file.read(2)
+        gameserver_port = int(struct.unpack("!H", data)[0])
+        lobby.gameserver_port = gameserver_port
+        print(f"started gameserver on port {gameserver_port}")
+        
+        return create_response(HTTPStatus.NO_CONTENT)
 
 
 @app.route("/lobbies", methods=["POST"])

@@ -42,6 +42,7 @@ Accept: application/json
 
 GET http://127.0.0.1:5000/lobbies/{{lobby_id}}
 Accept: application/json
+Authorization: Bearer {{jwt}}
 
 ###
 
@@ -52,6 +53,12 @@ Authorization: Bearer {{jwt}}
 ###
 
 PUT http://127.0.0.1:5000/lobbies/{{lobby_id}}/leave
+Content-Type: application/json
+Authorization: Bearer {{jwt}}
+
+###
+
+POST http://127.0.0.1:5000/lobbies/{{lobby_id}}/start
 Content-Type: application/json
 Authorization: Bearer {{jwt}}
 
