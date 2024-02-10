@@ -204,7 +204,7 @@ def lobby_detail(lobby_id: str) -> tuple[Response, HTTPStatus]:
     assert len(player_users) == len(lobby.player_ids)
     player_infos = [PlayerInfo(player.id, player.username) for player in player_users]
 
-    response = LobbyResponse(lobby.name, lobby.size, host_info, player_infos)
+    response = LobbyResponse(lobby.name, lobby.size, host_info, player_infos, lobby.gameserver_port)
 
     return create_ok_response(response.to_dict())
 
