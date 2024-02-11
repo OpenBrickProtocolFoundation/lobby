@@ -64,6 +64,10 @@ class Lobby:
     def touch(self) -> None:
         self.timestamp = time.monotonic()
 
+    @property
+    def num_players(self) -> int:
+        return len(self.player_ids) + 1
+
 
 @dataclass
 class JwtPayload(JsonSchemaMixin):
