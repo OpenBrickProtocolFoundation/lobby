@@ -274,7 +274,7 @@ def start_gameserver(lobby_id: str) -> tuple[Response, HTTPStatus]:
         socket_port = str(gameserver_socket.getsockname()[1])
         subprocess.Popen([current_app.config[ConfigValue.GAMESERVER_EXECUTABLE.value], socket_port])
         client_socket, _ = gameserver_socket.accept()
-        client_socket.send(struct.pack("!H", lobby.size))
+        client_socket.send(struct.pack("!H", lobby.num_players))
 
         with client_socket.makefile("rb") as file:
             data = file.read(2)
