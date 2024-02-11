@@ -281,7 +281,7 @@ def start_gameserver(lobby_id: str) -> tuple[Response, HTTPStatus]:
         gameserver_port = int(struct.unpack("!H", data)[0])
         lobby.gameserver_port = gameserver_port
         print(f"started gameserver on port {gameserver_port}")
-        
+
         return create_response(HTTPStatus.NO_CONTENT)
 
 
