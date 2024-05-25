@@ -52,13 +52,19 @@ with app.app_context():
 
 
 @dataclass
+class LobbyPlayer:
+    id: str
+    is_ready: bool
+
+
+@dataclass
 class Lobby:
     id: str
     name: str
     size: int
     host_id: str
     timestamp: float = field(default_factory=time.monotonic)
-    player_ids: list[str] = field(default_factory=list)
+    players: list[LobbyPlayer] = field(default_factory=list)
     gameserver_port: Optional[int] = field(default=None)
 
     def touch(self) -> None:
@@ -66,7 +72,10 @@ class Lobby:
 
     @property
     def num_players(self) -> int:
-        return len(self.player_ids) + 1
+        return len(self.players) + 1
+
+    def player_by_id(self, id: str) -> LobbyPlayer:
+        return next(p for p in self.players if p.id == id)
 
 
 @dataclass
@@ -90,7 +99,7 @@ def create_error_response(message: str, code: HTTPStatus) -> tuple[Response, HTT
 
 
 @dataclass
-class PlayerInfo(JsonSchemaMixin):
+class HostInfo(JsonSchemaMixin):
     id: str
     name: str
 
@@ -101,6 +110,13 @@ class PlayerInfo(JsonSchemaMixin):
             raise KeyError(f"User with id {id_} not found")
         assert isinstance(user, User)
         return cls(id_, user.username)
+
+
+@dataclass
+class PlayerInfo(JsonSchemaMixin):
+    id: str
+    name: str
+    is_ready: bool
 
 
 def try_authenticate(client_request: Request) -> User | tuple[Response, HTTPStatus]:
@@ -139,7 +155,7 @@ def lobby_list() -> tuple[Response, HTTPStatus]:
         name: str
         size: int
         num_players_in_lobby: int
-        host_info: PlayerInfo
+        host_info: HostInfo
 
     @dataclass
     class LobbyListResponse(JsonSchemaMixin):
@@ -147,7 +163,7 @@ def lobby_list() -> tuple[Response, HTTPStatus]:
 
     with active_lobbies.lock() as locked:
         lobbies = [
-            LobbyInfo(lobby.id, lobby.name, lobby.size, len(lobby.player_ids) + 1, PlayerInfo.from_id(lobby.host_id))
+            LobbyInfo(lobby.id, lobby.name, lobby.size, len(lobby.players) + 1, HostInfo.from_id(lobby.host_id))
             for
             lobby
             in locked.get().values()
@@ -169,13 +185,16 @@ def join_lobby(lobby_id: str) -> tuple[Response, HTTPStatus]:
         if lobby is None:
             return create_error_response(f"there is no active lobby with id {lobby_id}", HTTPStatus.NOT_FOUND)
 
-        if len(lobby.player_ids) + 1 >= lobby.size:
+        if len(lobby.players) + 1 >= lobby.size:
             return create_error_response("Lobby is already full.", HTTPStatus.BAD_REQUEST)
 
-        if any(lobby.host_id == user.id or user.id in lobby.player_ids for lobby in locked.get().values()):
+        if any(
+                lobby.host_id == user.id
+                or user.id in (p.id for p in lobby.players) for lobby in locked.get().values()
+        ):
             return create_error_response("This user is already inside another lobby.", HTTPStatus.BAD_REQUEST)
 
-        lobby.player_ids.append(user.id)
+        lobby.players.append(LobbyPlayer(id=user.id, is_ready=False))
 
     return create_response(HTTPStatus.NO_CONTENT)
 
@@ -196,17 +215,23 @@ def lobby_detail(lobby_id: str) -> tuple[Response, HTTPStatus]:
     class LobbyResponse(JsonSchemaMixin):
         name: str
         size: int
-        host_info: PlayerInfo
+        host_info: HostInfo
         player_infos: list[PlayerInfo]
         gameserver_port: Optional[int]
 
     host_user = typing.cast(Optional[User], User.query.filter(User.id == lobby.host_id).first())
     assert host_user is not None
-    host_info = PlayerInfo(lobby.host_id, host_user.username)
+    host_info = HostInfo(lobby.host_id, host_user.username)
 
-    player_users = typing.cast(list[User], User.query.filter(User.id.in_(lobby.player_ids)).all())
-    assert len(player_users) == len(lobby.player_ids)
-    player_infos = [PlayerInfo(player.id, player.username) for player in player_users]
+    players_users = typing.cast(list[User], User.query.filter(User.id.in_(p.id for p in lobby.players)).all())
+    assert len(players_users) == len(lobby.players)
+    player_infos = [
+        PlayerInfo(
+            user.id,
+            user.username,
+            next(p.is_ready for p in lobby.players if p.id == user.id),
+        ) for user in players_users
+    ]
 
     response = LobbyResponse(lobby.name, lobby.size, host_info, player_infos, lobby.gameserver_port)
 
@@ -243,10 +268,10 @@ def leave_lobby(lobby_id: str) -> tuple[Response, HTTPStatus]:
             return create_error_response("Lobby not found", HTTPStatus.NOT_FOUND)
 
         lobby = locked.get()[lobby_id]
-        if user.id not in lobby.player_ids:
+        if user.id not in (p.id for p in lobby.players):
             return create_error_response("You are not a player in this lobby", HTTPStatus.FORBIDDEN)
 
-        lobby.player_ids.remove(user.id)
+        lobby.players.remove(next(player for player in lobby.players if player.id == user.id))
 
     return create_response(HTTPStatus.NO_CONTENT)
 
@@ -256,6 +281,10 @@ def start_gameserver(lobby_id: str) -> tuple[Response, HTTPStatus]:
     user = try_authenticate(request)
     if not isinstance(user, User):
         return user
+
+    @dataclass
+    class StartResponse(JsonSchemaMixin):
+        port: int
 
     with active_lobbies.lock() as locked:
         if lobby_id not in locked.get():
@@ -268,12 +297,20 @@ def start_gameserver(lobby_id: str) -> tuple[Response, HTTPStatus]:
         if lobby.gameserver_port is not None:
             return create_error_response("Server is already running", HTTPStatus.BAD_REQUEST)
 
+        if any(not p.is_ready for p in lobby.players):
+            return create_error_response("Not all clients are ready yet", HTTPStatus.TOO_EARLY)
+
         gameserver_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         gameserver_socket.bind(("127.0.0.1", 0))
         gameserver_socket.listen(1)
         socket_port = str(gameserver_socket.getsockname()[1])
+        print(
+            f"starting gameserver {current_app.config[ConfigValue.GAMESERVER_EXECUTABLE.value]} with port {socket_port}..."
+        )
         subprocess.Popen([current_app.config[ConfigValue.GAMESERVER_EXECUTABLE.value], socket_port])
+        
         client_socket, _ = gameserver_socket.accept()
+        print(f"sending the number of players to the gameserver: {lobby.num_players}")
         client_socket.send(struct.pack("!H", lobby.num_players))
 
         with client_socket.makefile("rb") as file:
@@ -282,7 +319,7 @@ def start_gameserver(lobby_id: str) -> tuple[Response, HTTPStatus]:
         lobby.gameserver_port = gameserver_port
         print(f"started gameserver on port {gameserver_port}")
 
-        return create_response(HTTPStatus.NO_CONTENT)
+        return create_ok_response(StartResponse(gameserver_port).to_dict())
 
 
 @app.route("/lobbies", methods=["POST"])
@@ -305,7 +342,7 @@ def create_lobby() -> tuple[Response, HTTPStatus]:
         return create_error_response(str(e), HTTPStatus.BAD_REQUEST)
 
     with active_lobbies.lock() as locked:
-        if any(lobby.host_id == user.id or user.id in lobby.player_ids for lobby in locked.get().values()):
+        if any(lobby.host_id == user.id or user.id in (p.id for p in lobby.players) for lobby in locked.get().values()):
             return create_error_response("This user is already inside another lobby.", HTTPStatus.BAD_REQUEST)
 
         new_id = str(uuid4())
@@ -398,6 +435,55 @@ def register() -> tuple[Response, HTTPStatus]:
     return create_response(HTTPStatus.NO_CONTENT)
 
 
+@app.route("/unregister", methods=["POST"])
+def unregister() -> tuple[Response, HTTPStatus]:
+    user = try_authenticate(request)
+    if not isinstance(user, User):
+        return user
+
+    try:
+        db.session.delete(user)
+        db.session.commit()
+    except sqlalchemy.exc.IntegrityError:
+        return create_error_response("Cannot delete non-existent user.", HTTPStatus.CONFLICT)
+
+    return create_response(HTTPStatus.NO_CONTENT)
+
+
+@app.route("/lobby/<lobby_id>/ready", methods=["POST"])
+def set_client_ready(lobby_id: str) -> tuple[Response, HTTPStatus]:
+    print("client starts to set itself ready")
+
+    user = try_authenticate(request)
+    if not isinstance(user, User):
+        return user
+
+    with active_lobbies.lock() as locked:
+        if lobby_id not in locked.get():
+            return create_error_response("Lobby not found", HTTPStatus.NOT_FOUND)
+
+        lobby: Lobby = locked.get()[lobby_id]
+        if user.id not in (p.id for p in lobby.players):
+            return create_error_response("You are not a player in this lobby", HTTPStatus.FORBIDDEN)
+
+        lobby.player_by_id(user.id).is_ready = True
+
+    @dataclass
+    class SetClientReadyResponse(JsonSchemaMixin):
+        port: int
+
+    while True:
+        with active_lobbies.lock() as locked:
+            if lobby_id not in locked.get():
+                return create_error_response("Lobby was closed", HTTPStatus.NOT_FOUND)
+
+            lobby: Lobby = locked.get()[lobby_id]
+            if lobby.gameserver_port is not None:
+                return create_ok_response(SetClientReadyResponse(lobby.gameserver_port).to_dict())
+
+        time.sleep(0.2)
+
+
 def main() -> None:
     config = Config.from_file("config.json")
     app.config.update(config.to_dict())
@@ -406,7 +492,7 @@ def main() -> None:
         from waitress import serve
         serve(app, host="0.0.0.0", port=1717)  # todo: fetch the port from some config file
     else:
-        app.run(debug=True)
+        app.run()
 
 
 if __name__ == "__main__":
