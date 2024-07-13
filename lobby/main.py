@@ -307,11 +307,11 @@ def start_gameserver(lobby_id: str) -> tuple[Response, HTTPStatus]:
         print(
             f"starting gameserver {current_app.config[ConfigValue.GAMESERVER_EXECUTABLE.value]} with port {socket_port}..."
         )
-        # todo: this should not be machine-dependent OMG
         env = os.environ.copy()
-        env["PATH"] = "C:\\dev\\cpp\\obpf-simulator\\cmake-build-msvc-debug\\bin\\simulator\\"
+        env["PATH"] = current_app.config[ConfigValue.SIMULATOR_LIBRARY_PATH.value]
         subprocess.Popen([current_app.config[ConfigValue.GAMESERVER_EXECUTABLE.value], socket_port], env=env)
-        
+        # print(f"manually start the gameserver on port {socket_port}")
+
         client_socket, _ = gameserver_socket.accept()
         print(f"sending the number of players to the gameserver: {lobby.num_players}")
         client_socket.send(struct.pack("!H", lobby.num_players))
@@ -448,7 +448,7 @@ def unregister() -> tuple[Response, HTTPStatus]:
         db.session.delete(user)
         db.session.commit()
     except sqlalchemy.exc.IntegrityError:
-        return create_error_response("Cannot delete non-existent user.", HTTPStatus.CONFLICT)
+        return create_error_response("Cannot delete non-existing user.", HTTPStatus.CONFLICT)
 
     return create_response(HTTPStatus.NO_CONTENT)
 
