@@ -147,6 +147,12 @@ def try_authenticate(client_request: Request) -> User | tuple[Response, HTTPStat
     return user
 
 
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    return create_ok_response({})
+
+
 @app.route("/lobbies", methods=["GET"])
 def lobby_list() -> tuple[Response, HTTPStatus]:
     @dataclass
@@ -488,7 +494,7 @@ def set_client_ready(lobby_id: str) -> tuple[Response, HTTPStatus]:
 
 
 def main() -> None:
-    config = Config.from_file("config.json")
+    config = Config.from_file(os.environ.get("OBBF_CONFIG_PATH","config.json"))
     app.config.update(config.to_dict())
     pprint.pprint(app.config)
     if len(sys.argv) >= 2 and sys.argv[1] == "production":

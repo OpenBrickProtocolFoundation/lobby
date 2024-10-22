@@ -1,0 +1,12 @@
+version: "3.8"
+name: "obpf-lobby"
+services:
+    flask:
+        container_name: obpf-lobby
+        build:
+            context: .
+        ports:
+            - "1717:1717"
+        volumes:
+            - "./files/:/app/files/"
+            - ./config.json:/app/config/config.json
